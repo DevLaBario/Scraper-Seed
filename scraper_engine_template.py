@@ -1,12 +1,11 @@
 """
-Generic scraper engine - site-agnostic scraping logic.
+"""Generic scraper engine - site-agnostic scraping logic.
 Uses configuration from config.py for site-specific behavior.
 
 This template provides the core scraping framework with:
 - Multi-process parallelization
 - Resource management (CPU/RAM monitoring)
 - Retry logic for failed searches
-- Dynamic filtering (keyword matching, model validation, part type validation)
 - Graceful Chrome driver shutdown
 - Pagination support
 - CSV input/output handling
@@ -152,170 +151,6 @@ def load_search_terms(filename):
     return terms
 
 
-# ---------- Filtering Functions ----------
-
-
-def extract_keywords(search_term):
-    """Extract important keywords from search term (removes filler words)."""
-    words = search_term.lower().split()
-    keywords = [w for w in words if w not in config.IGNORE_WORDS and len(w) > 2]
-    return set(keywords)
-
-
-def extract_model_numbers(search_term):
-    """
-    Extract model numbers from search term.
-    Model numbers are typically alphanumeric patterns like: M607, 3610, M608dn, etc.
-    Returns a set of model identifiers found in the search term.
-    """
-    import re
-
-    # Pattern matches:
-    # - Alphanumeric sequences with at least one digit (e.g., M607, 3610, M608dn, J8J70)
-    # - Minimum length of 3 characters to avoid false positives
-    pattern = r"\b[A-Za-z0-9]*\d[A-Za-z0-9]*\b"
-    matches = re.findall(pattern, search_term)
-
-    # Filter to keep only meaningful model numbers (length >= 3)
-    models = {m.lower() for m in matches if len(m) >= 3}
-    return models
-
-
-def validate_model_numbers(search_term, product_title):
-    """
-    Validate that key model numbers from search term appear in product title.
-    Returns (is_valid: bool, missing_models: set)
-    """
-    if not product_title or product_title == "No Title":
-        return False, set()
-
-    search_models = extract_model_numbers(search_term)
-    if not search_models:
-        return True, set()  # No model numbers to validate
-
-    title_lower = product_title.lower()
-
-    # Check which models are present in the title
-    found_models = {model for model in search_models if model in title_lower}
-    missing_models = search_models - found_models
-
-    # Consider valid if at least one primary model number is found
-    is_valid = len(found_models) > 0
-
-    return is_valid, missing_models
-
-
-def extract_part_types(search_term):
-    """
-    Extract part type phrases from search term.
-    Looks for known part type keywords like 'transfer roller', 'separation pad', etc.
-    Returns a list of matching part type phrases found in search term.
-    """
-    search_lower = search_term.lower()
-    found_types = []
-
-    for part_type in config.PART_TYPE_KEYWORDS:
-        if part_type in search_lower:
-            found_types.append(part_type)
-
-    return found_types
-
-
-def validate_part_type(search_term, product_title):
-    """
-    Validate that at least one part type from search term appears in product title.
-    This ensures we don't mix up different part types (e.g., transfer roller vs pickup roller).
-    Returns (is_valid: bool, missing_types: list)
-    """
-    if not product_title or product_title == "No Title":
-        return False, []
-
-    search_part_types = extract_part_types(search_term)
-    if not search_part_types:
-        return True, []  # No part types to validate
-
-    title_lower = product_title.lower()
-
-    # Check if any part type phrase appears in the title
-    found_types = [pt for pt in search_part_types if pt in title_lower]
-    missing_types = [pt for pt in search_part_types if pt not in found_types]
-
-    # Valid if at least one part type matches
-    is_valid = len(found_types) > 0
-
-    return is_valid, missing_types
-
-
-def calculate_keyword_match(search_term, product_title):
-    """
-    Calculate what percentage of search keywords appear in product title.
-    Returns ratio between 0.0 and 1.0
-    """
-    if not product_title or product_title == "No Title":
-        return 0.0
-
-    search_keywords = extract_keywords(search_term)
-    if not search_keywords:
-        return 1.0  # If no keywords to match, accept it
-
-    title_lower = product_title.lower()
-    matches = sum(1 for keyword in search_keywords if keyword in title_lower)
-
-    return matches / len(search_keywords)
-
-
-def contains_exclusion_keyword(product_title):
-    """Check if product title contains any exclusion keywords."""
-    if not product_title or product_title == "No Title":
-        return False
-
-    title_lower = product_title.lower()
-    return any(keyword in title_lower for keyword in config.EXCLUSION_KEYWORDS)
-
-
-def should_skip_result(search_term, product_title, result_index):
-    """
-    Determine if a result should be skipped based on filtering rules.
-    Returns (should_skip: bool, reason: str)
-    """
-    # Skip first N results (sponsored listings)
-    if result_index < config.SKIP_FIRST_N_RESULTS:
-        return True, f"Skipped (position {result_index + 1}, likely sponsored)"
-
-    # Skip if title is missing
-    if not product_title or product_title == "No Title":
-        return True, "Skipped (no title)"
-
-    # Check exclusion keywords
-    if config.ENABLE_EXCLUSION_FILTER and contains_exclusion_keyword(product_title):
-        return True, "Skipped (exclusion keyword detected)"
-
-    # Check model number validation
-    if config.ENABLE_MODEL_VALIDATION:
-        is_valid, missing_models = validate_model_numbers(search_term, product_title)
-        if not is_valid:
-            missing_str = ", ".join(sorted(missing_models))
-            return True, f"Skipped (model number mismatch: missing {missing_str})"
-
-    # Check part type validation
-    if config.ENABLE_PART_TYPE_VALIDATION:
-        is_valid, missing_types = validate_part_type(search_term, product_title)
-        if not is_valid:
-            missing_str = ", ".join(missing_types)
-            return True, f"Skipped (part type mismatch: expected '{missing_str}')"
-
-    # Check keyword matching
-    if config.ENABLE_KEYWORD_MATCHING:
-        match_ratio = calculate_keyword_match(search_term, product_title)
-        if match_ratio < config.MIN_KEYWORD_MATCH_RATIO:
-            return (
-                True,
-                f"Skipped (keyword match {match_ratio:.0%} < {config.MIN_KEYWORD_MATCH_RATIO:.0%})",
-            )
-
-    return False, "Accepted"
-
-
 # ---------- Selector Resolution ----------
 
 
@@ -458,8 +293,6 @@ def paginated_results(driver, search_term, csv_lock, bot_id):
     wait = WebDriverWait(driver, config.PAGE_LOAD_TIMEOUT)
     total_scraped = 0
     page_num = 1
-    accepted_count = 0
-    filtered_count = 0
 
     while True:
         # Wait for results container
@@ -501,21 +334,13 @@ def paginated_results(driver, search_term, csv_lock, bot_id):
 
             # Extract product data
             row = extract_product_data(product, search_term)
-
-            # Apply filtering
-            product_title = row[config.OUTPUT_FIELDS.index("Product Title")]
-            should_skip, reason = should_skip_result(search_term, product_title, idx)
-
-            if should_skip:
-                filtered_count += 1
-                print(f"[Bot {bot_id}] [FILTER] {reason}: '{product_title[:60]}...'")
-                continue
-
-            accepted_count += 1
             batch_rows.append(row)
             total_scraped += 1
+
+            # Optional: Print extracted data for monitoring
+            product_title = row[config.OUTPUT_FIELDS.index("Product Title")]
             print(
-                f"[Bot {bot_id}] [MATCH] Accepted ({accepted_count}): '{product_title[:60]}...'"
+                f"[Bot {bot_id}] Scraped ({total_scraped}): '{product_title[:60]}...'"
             )
 
         # Write batch to CSV
@@ -554,9 +379,7 @@ def paginated_results(driver, search_term, csv_lock, bot_id):
             print(f"[Bot {bot_id}] Error clicking next page: {e}")
             break
 
-    print(
-        f"[Bot {bot_id}] Filtering stats: {accepted_count} accepted, {filtered_count} filtered | Total: {total_scraped} items"
-    )
+    print(f"[Bot {bot_id}] Completed: {total_scraped} items scraped")
     return total_scraped
 
 
